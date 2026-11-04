@@ -1,0 +1,84 @@
+# Fable | VPN — бот + PostgreSQL + Redis (+ опциональный Caddy для HTTPS)
+#
+#   docker compose up -d --build                    — без Caddy (свой реверс-прокси)
+#   docker compose --profile caddy up -d --build    — с Caddy (автоматический HTTPS)
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: fable-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fable:${POSTGRES_PASSWORD:?задай POSTGRES_PASSWORD в .env}@postgres:5432/fable
+      REDIS_URL: redis://redis:6379/0
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"   # наружу не торчит: ходим через реверс-прокси / Caddy
+    networks: [fable]
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: fable-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задай POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: fable
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fable -d fable"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [fable]
+
+  redis:
+    image: redis:7-alpine
+    container_name: fable-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [fable]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: fable-caddy
+    profiles: ["caddy"]
+    restart: unless-stopped
+    environment:
+      BOT_DOMAIN: ${BOT_DOMAIN:?задай BOT_DOMAIN в .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [bot]
+    networks: [fable]
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  fable:
